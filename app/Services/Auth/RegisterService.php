@@ -2,6 +2,7 @@
 
 namespace App\Services\Auth;
 
+use App\Exceptions\ApiException;
 use App\Models\InviteCode;
 use App\Models\Plan;
 use App\Models\User;
@@ -81,17 +82,19 @@ class RegisterService
 
         // 检查邮箱验证
         if ((int) admin_setting('email_verify', 0)) {
-            if (empty($request->input('email_code'))) {
+            $emailCode = $request->input('email_code');
+            if (!is_scalar($emailCode) || !preg_match('/^\d{6}$/', (string) $emailCode)) {
                 return [false, [422, __('Email verification code cannot be empty')]];
             }
-            if ((string) Cache::get(CacheKey::get('EMAIL_VERIFY_CODE', $request->input('email'))) !== (string) $request->input('email_code')) {
+
+            $cachedEmailCode = Cache::get(CacheKey::get('EMAIL_VERIFY_CODE', $request->input('email')));
+            if ($cachedEmailCode === null || !hash_equals((string) $cachedEmailCode, (string) $emailCode)) {
                 return [false, [400, __('Incorrect email verification code')]];
             }
         }
 
         // 检查邮箱是否存在
-        $email = $request->input('email');
-        $exist = User::where('email', $email)->first();
+        $exist = User::byEmail($request->input('email'))->first();
         if ($exist) {
             return [false, [400201, __('Email already exists')]];
         }
@@ -113,7 +116,7 @@ class RegisterService
 
         if (!$inviteCodeModel) {
             if ((int) admin_setting('invite_force', 0)) {
-                throw new \Exception(__('Invalid invitation code'));
+                throw new ApiException(__('Invalid invitation code'));
             }
             return null;
         }

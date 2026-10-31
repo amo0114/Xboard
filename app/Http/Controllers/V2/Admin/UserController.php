@@ -10,10 +10,13 @@ use App\Jobs\SendEmailJob;
 use App\Models\Plan;
 use App\Models\User;
 use App\Services\AuthService;
+use App\Services\NodeSyncService;
+use App\Services\Plugin\HookManager;
 use App\Services\UserService;
 use App\Traits\QueryOperators;
 use App\Utils\Helper;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Query\Builder as QueryBuilder;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 
@@ -31,30 +34,27 @@ class UserController extends Controller
             return $this->fail([400202, '用户不存在']);
         $user->token = Helper::guid();
         $user->uuid = Helper::guid(true);
-        return $this->success($user->save());
+        $result = $user->save();
+
+        if ($result) {
+            HookManager::call('admin.user.secret.reset', [
+                'user' => $user,
+                'request' => $request,
+            ]);
+        }
+
+        return $this->success($result);
     }
 
-    /**
-     * Apply filters and sorts to the query builder
-     *
-     * @param Request $request
-     * @param Builder $builder
-     * @return void
-     */
-    private function applyFiltersAndSorts(Request $request, Builder $builder): void
+    // Apply filters and sorts to the query builder.
+    private function applyFiltersAndSorts(Request $request, Builder|QueryBuilder $builder): void
     {
         $this->applyFilters($request, $builder);
         $this->applySorting($request, $builder);
     }
 
-    /**
-     * Apply filters to the query builder
-     *
-     * @param Request $request
-     * @param Builder $builder
-     * @return void
-     */
-    private function applyFilters(Request $request, Builder $builder): void
+    // Apply filters to the query builder.
+    private function applyFilters(Request $request, Builder|QueryBuilder $builder): void
     {
         if (!$request->has('filter')) {
             return;
@@ -63,25 +63,28 @@ class UserController extends Controller
         collect($request->input('filter'))->each(function ($filter) use ($builder) {
             $field = $filter['id'];
             $value = $filter['value'];
+            $logic = strtolower($filter['logic'] ?? 'and');
 
-            $builder->where(function ($query) use ($field, $value) {
-                $this->buildFilterQuery($query, $field, $value);
-            });
+            if ($logic === 'or') {
+                $builder->orWhere(function ($query) use ($field, $value) {
+                    $this->buildFilterQuery($query, $field, $value);
+                });
+            } else {
+                $builder->where(function ($query) use ($field, $value) {
+                    $this->buildFilterQuery($query, $field, $value);
+                });
+            }
         });
     }
 
-    /**
-     * Build the filter query based on field and value
-     *
-     * @param Builder $query
-     * @param string $field
-     * @param mixed $value
-     * @return void
-     */
-    private function buildFilterQuery(Builder $query, string $field, mixed $value): void
+    // Build one filter query condition.
+    private function buildFilterQuery(Builder|QueryBuilder $query, string $field, mixed $value): void
     {
         // 处理关联查询
         if (str_contains($field, '.')) {
+            if (!method_exists($query, 'whereHas')) {
+                return;
+            }
             [$relation, $relationField] = explode('.', $field);
             $query->whereHas($relation, function ($q) use ($relationField, $value) {
                 if (is_array($value)) {
@@ -126,14 +129,8 @@ class UserController extends Controller
         $this->applyQueryCondition($query, $queryField, $operator, $filterValue);
     }
 
-    /**
-     * Apply sorting to the query builder
-     *
-     * @param Request $request
-     * @param Builder $builder
-     * @return void
-     */
-    private function applySorting(Request $request, Builder $builder): void
+    // Apply sorting rules to the query builder.
+    private function applySorting(Request $request, Builder|QueryBuilder $builder): void
     {
         if (!$request->has('sort')) {
             return;
@@ -146,19 +143,52 @@ class UserController extends Controller
         });
     }
 
-    /**
-     * Fetch paginated user list with filters and sorting
-     *
-     * @param Request $request
-     * @return \Illuminate\Http\Response
-     */
+    // Resolve bulk operation scope and normalize user_ids.
+    private function resolveScope(Request $request): array
+    {
+        $scope = $request->input('scope');
+        $userIds = $request->input('user_ids');
+
+        $hasSelection = is_array($userIds) && count(array_filter($userIds, static fn($v) => is_numeric($v))) > 0;
+        $hasFilter = $request->has('filter') && !empty($request->input('filter'));
+
+        if (!in_array($scope, ['selected', 'filtered', 'all'], true)) {
+            if ($hasSelection) {
+                $scope = 'selected';
+            } elseif ($hasFilter) {
+                $scope = 'filtered';
+            } else {
+                $scope = 'all';
+            }
+        }
+
+        $normalizedIds = [];
+        if ($scope === 'selected') {
+            $normalizedIds = is_array($userIds) ? $userIds : [];
+            $normalizedIds = array_values(array_unique(array_map(static function ($v) {
+                return is_numeric($v) ? (int) $v : null;
+            }, $normalizedIds)));
+            $normalizedIds = array_values(array_filter($normalizedIds, static fn($v) => is_int($v)));
+        }
+
+        return [
+            'scope' => $scope,
+            'user_ids' => $normalizedIds,
+        ];
+    }
+
+    // Fetch paginated user list (filters + sorting).
     public function fetch(Request $request)
     {
         $current = $request->input('current', 1);
         $pageSize = $request->input('pageSize', 10);
 
-        $userModel = User::with(['plan:id,name', 'invite_user:id,email', 'group:id,name'])
-            ->select(DB::raw('*, (u+d) as total_used'));
+        $userModel = User::query()
+            ->with(['plan:id,name', 'invite_user:id,email', 'group:id,name'])
+            ->select((new User())->getTable() . '.*')
+            ->selectRaw('(u + d) as total_used');
+
+        $userModel = HookManager::filter('admin.user.fetch.query', $userModel, $request);
 
         $this->applyFiltersAndSorts($request, $userModel);
 
@@ -172,19 +202,15 @@ class UserController extends Controller
         return $this->paginate($users);
     }
 
-    /**
-     * Transform user data for response
-     *
-     * @param User $user
-     * @return array<string, mixed>
-     */
+    // Transform user fields for API response.
     public static function transformUserData(User $user): array
     {
+        $model = $user;
         $user = $user->toArray();
         $user['balance'] = $user['balance'] / 100;
         $user['commission_balance'] = $user['commission_balance'] / 100;
         $user['subscribe_url'] = Helper::getSubscribeUrl($user['token']);
-        return $user;
+        return HookManager::filter('admin.user.transform', $user, $model);
     }
 
     public function getUserInfoById(Request $request)
@@ -195,6 +221,7 @@ class UserController extends Controller
             'id.required' => '用户ID不能为空'
         ]);
         $user = User::find($request->input('id'))->load('invite_user');
+        $user = HookManager::filter('admin.user.detail', $user, $request);
         return $this->success($user);
     }
 
@@ -207,7 +234,7 @@ class UserController extends Controller
             return $this->fail([400202, '用户不存在']);
         }
         if (isset($params['email'])) {
-            if (User::where('email', $params['email'])->first() && $user->email !== $params['email']) {
+            if (User::byEmail($params['email'])->first() && $user->email !== $params['email']) {
                 return $this->fail([400201, '邮箱已被使用']);
             }
         }
@@ -227,7 +254,7 @@ class UserController extends Controller
             $params['group_id'] = $plan->group_id;
         }
         // 处理邀请用户
-        if ($request->input('invite_user_email') && $inviteUser = User::where('email', $request->input('invite_user_email'))->first()) {
+        if ($request->input('invite_user_email') && $inviteUser = User::byEmail($request->input('invite_user_email'))->first()) {
             $params['invite_user_id'] = $inviteUser->id;
         } else {
             $params['invite_user_id'] = null;
@@ -244,28 +271,49 @@ class UserController extends Controller
             $params['commission_balance'] = $params['commission_balance'] * 100;
         }
 
+        $params = HookManager::filter('admin.user.update.params', $params, $request, $user);
+
+        HookManager::call('admin.user.update.before', [
+            'user' => $user,
+            'params' => $params,
+            'request' => $request,
+        ]);
+
         try {
             $user->update($params);
         } catch (\Exception $e) {
             Log::error($e);
             return $this->fail([500, '保存失败']);
         }
+
+        HookManager::call('admin.user.update.after', [
+            'user' => $user->refresh(),
+            'params' => $params,
+            'request' => $request,
+        ]);
+
         return $this->success(true);
     }
 
-    /**
-     * 导出用户数据为CSV格式
-     *
-     * @param Request $request
-     * @return \Symfony\Component\HttpFoundation\StreamedResponse
-     */
+    // Export users to CSV.
     public function dumpCSV(Request $request)
     {
         ini_set('memory_limit', '-1');
         gc_enable(); // 启用垃圾回收
 
+        $scopeInfo = $this->resolveScope($request);
+        $scope = $scopeInfo['scope'];
+        $userIds = $scopeInfo['user_ids'];
+
+        if ($scope === 'selected') {
+            if (empty($userIds)) {
+                return $this->fail([422, 'user_ids不能为空']);
+            }
+        }
+
         // 优化查询：使用with预加载plan关系，避免N+1问题
-        $query = User::with('plan:id,name')
+        $query = User::query()
+            ->with('plan:id,name')
             ->orderBy('id', 'asc')
             ->select([
                 'email',
@@ -279,7 +327,11 @@ class UserController extends Controller
                 'plan_id'
             ]);
 
-        $this->applyFiltersAndSorts($request, $query);
+        if ($scope === 'selected') {
+            $query->whereIn('id', $userIds);
+        } elseif ($scope === 'filtered') {
+            $this->applyFiltersAndSorts($request, $query);
+        } // all: ignore filter/sort
 
         $filename = 'users_' . date('Y-m-d_His') . '.csv';
 
@@ -340,9 +392,15 @@ class UserController extends Controller
     public function generate(UserGenerate $request)
     {
         if ($request->input('email_prefix')) {
+            // If generate_count is specified with email_prefix, generate multiple users with incremented emails
+            if ($request->input('generate_count')) {
+                return $this->multiGenerateWithPrefix($request);
+            }
+            
+            // Single user generation with email_prefix
             $email = $request->input('email_prefix') . '@' . $request->input('email_suffix');
 
-            if (User::where('email', $email)->exists()) {
+            if (User::byEmail($email)->exists()) {
                 return $this->fail([400201, '邮箱已存在于系统中']);
             }
 
@@ -436,26 +494,146 @@ class UserController extends Controller
         ]);
     }
 
+    private function multiGenerateWithPrefix(Request $request)
+    {
+        $userService = app(UserService::class);
+        $usersData = [];
+        $emailPrefix = $request->input('email_prefix');
+        $emailSuffix = $request->input('email_suffix');
+        $generateCount = $request->input('generate_count');
+
+        // Check if any of the emails with prefix already exist
+        for ($i = 1; $i <= $generateCount; $i++) {
+            $email = $emailPrefix . '_' . $i . '@' . $emailSuffix;
+            if (User::where('email', $email)->exists()) {
+                return $this->fail([400201, '邮箱 ' . $email . ' 已存在于系统中']);
+            }
+        }
+
+        // Generate user data for batch creation
+        for ($i = 1; $i <= $generateCount; $i++) {
+            $email = $emailPrefix . '_' . $i . '@' . $emailSuffix;
+            $usersData[] = [
+                'email' => $email,
+                'password' => $request->input('password') ?? $email,
+                'plan_id' => $request->input('plan_id'),
+                'expired_at' => $request->input('expired_at'),
+            ];
+        }
+
+        try {
+            DB::beginTransaction();
+            $users = [];
+            foreach ($usersData as $userData) {
+                $user = $userService->createUser($userData);
+                $user->save();
+                $users[] = $user;
+            }
+            DB::commit();
+        } catch (\Exception $e) {
+            DB::rollBack();
+            return $this->fail([500, '生成失败']);
+        }
+
+        // 判断是否导出 CSV
+        if ($request->input('download_csv')) {
+            $headers = [
+                'Content-Type' => 'text/csv',
+                'Content-Disposition' => 'attachment; filename="users.csv"',
+            ];
+            $callback = function () use ($users, $request) {
+                $handle = fopen('php://output', 'w');
+                fputcsv($handle, ['账号', '密码', '过期时间', 'UUID', '创建时间', '订阅地址']);
+                foreach ($users as $user) {
+                    $user = $user->refresh();
+                    $expireDate = $user['expired_at'] === NULL ? '长期有效' : date('Y-m-d H:i:s', $user['expired_at']);
+                    $createDate = date('Y-m-d H:i:s', $user['created_at']);
+                    $password = $request->input('password') ?? $user['email'];
+                    $subscribeUrl = Helper::getSubscribeUrl($user['token']);
+                    fputcsv($handle, [$user['email'], $password, $expireDate, $user['uuid'], $createDate, $subscribeUrl]);
+                }
+                fclose($handle);
+            };
+            return response()->streamDownload($callback, 'users.csv', $headers);
+        }
+
+        // 默认返回 JSON
+        $data = collect($users)->map(function ($user) use ($request) {
+            return [
+                'email' => $user['email'],
+                'password' => $request->input('password') ?? $user['email'],
+                'expired_at' => $user['expired_at'] === NULL ? '长期有效' : date('Y-m-d H:i:s', $user['expired_at']),
+                'uuid' => $user['uuid'],
+                'created_at' => date('Y-m-d H:i:s', $user['created_at']),
+                'subscribe_url' => Helper::getSubscribeUrl($user['token']),
+            ];
+        });
+        return response()->json([
+            'code' => 0,
+            'message' => '批量生成成功',
+            'data' => $data,
+        ]);
+    }
+
     public function sendMail(UserSendMail $request)
     {
         ini_set('memory_limit', '-1');
+        $scopeInfo = $this->resolveScope($request);
+        $scope = $scopeInfo['scope'];
+        $userIds = $scopeInfo['user_ids'];
+
+        if ($scope === 'selected') {
+            if (empty($userIds)) {
+                return $this->fail([422, 'user_ids不能为空']);
+            }
+        }
+
         $sortType = in_array($request->input('sort_type'), ['ASC', 'DESC']) ? $request->input('sort_type') : 'DESC';
         $sort = $request->input('sort') ? $request->input('sort') : 'created_at';
-        $builder = User::orderBy($sort, $sortType);
-        $this->applyFiltersAndSorts($request, $builder);
+
+        $builder = User::query()
+            ->with('plan:id,name')
+            ->orderBy('id', 'desc');
+
+        if ($scope === 'filtered') {
+            // filtered: apply filters/sort
+            $builder->orderBy($sort, $sortType);
+            $this->applyFiltersAndSorts($request, $builder);
+        } elseif ($scope === 'selected') {
+            $builder->whereIn('id', $userIds);
+        } // all: ignore filter/sort
 
         $subject = $request->input('subject');
         $content = $request->input('content');
-        $templateValue = [
-            'name' => admin_setting('app_name', 'XBoard'),
-            'url' => admin_setting('app_url'),
-            'content' => $content
-        ];
+        $appName = admin_setting('app_name', 'XBoard');
+        $appUrl = admin_setting('app_url');
 
         $chunkSize = 1000;
 
-        $builder->chunk($chunkSize, function ($users) use ($subject, $templateValue, &$totalProcessed) {
+        $builder->chunk($chunkSize, function ($users) use ($subject, $content, $appName, $appUrl) {
             foreach ($users as $user) {
+                $vars = [
+                    'app.name' => $appName,
+                    'app.url' => $appUrl,
+                    'now' => now()->format('Y-m-d H:i:s'),
+                    'user.id' => $user->id,
+                    'user.email' => $user->email,
+                    'user.uuid' => $user->uuid,
+                    'user.plan_name' => $user->plan?->name ?? '',
+                    'user.expired_at' => $user->expired_at ? date('Y-m-d H:i:s', $user->expired_at) : '',
+                    'user.transfer_enable' => (int) ($user->transfer_enable ?? 0),
+                    'user.transfer_used' => (int) (($user->u ?? 0) + ($user->d ?? 0)),
+                    'user.transfer_left' => (int) (($user->transfer_enable ?? 0) - (($user->u ?? 0) + ($user->d ?? 0))),
+                ];
+
+                $templateValue = [
+                    'name' => $appName,
+                    'url' => $appUrl,
+                    'content' => $content,
+                    'vars' => $vars,
+                    'content_mode' => 'text',
+                ];
+
                 dispatch(new SendEmailJob([
                     'email' => $user->email,
                     'subject' => $subject,
@@ -470,10 +648,29 @@ class UserController extends Controller
 
     public function ban(Request $request)
     {
+        $scopeInfo = $this->resolveScope($request);
+        $scope = $scopeInfo['scope'];
+        $userIds = $scopeInfo['user_ids'];
+
+        if ($scope === 'selected') {
+            if (empty($userIds)) {
+                return $this->fail([422, 'user_ids不能为空']);
+            }
+        }
+
         $sortType = in_array($request->input('sort_type'), ['ASC', 'DESC']) ? $request->input('sort_type') : 'DESC';
         $sort = $request->input('sort') ? $request->input('sort') : 'created_at';
-        $builder = User::orderBy($sort, $sortType);
-        $this->applyFilters($request, $builder);
+
+        $builder = User::query()->orderBy('id', 'desc');
+
+        if ($scope === 'filtered') {
+            // filtered: keep current semantics
+            $builder->orderBy($sort, $sortType);
+            $this->applyFiltersAndSorts($request, $builder);
+        } elseif ($scope === 'selected') {
+            $builder->whereIn('id', $userIds);
+        } // all: ignore filter/sort
+
         try {
             $builder->update([
                 'banned' => 1
@@ -482,16 +679,11 @@ class UserController extends Controller
             Log::error($e);
             return $this->fail([500, '处理失败']);
         }
-
+        // Full refresh not implemented.
         return $this->success(true);
     }
 
-    /**
-     * 删除用户及其关联数据
-     *
-     * @param Request $request
-     * @return JsonResponse
-     */
+    // Delete user and related data.
     public function destroy(Request $request)
     {
         $request->validate([
@@ -501,6 +693,11 @@ class UserController extends Controller
             'id.exists' => '用户不存在'
         ]);
         $user = User::find($request->input('id'));
+        HookManager::call('admin.user.destroy.before', [
+            'user' => $user,
+            'request' => $request,
+        ]);
+
         try {
             DB::beginTransaction();
             $user->orders()->delete();
@@ -509,6 +706,12 @@ class UserController extends Controller
             $user->tickets()->delete();
             $user->delete();
             DB::commit();
+
+            HookManager::call('admin.user.destroy.after', [
+                'user' => $user,
+                'request' => $request,
+            ]);
+
             return $this->success(true);
         } catch (\Exception $e) {
             DB::rollBack();

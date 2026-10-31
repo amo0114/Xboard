@@ -16,6 +16,7 @@ use App\Services\PaymentService;
 use App\Services\PlanService;
 use App\Services\UserService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class OrderController extends Controller
 {
@@ -124,6 +125,9 @@ class OrderController extends Controller
             ->first();
         if (!$order) {
             return $this->fail([400, __('Order does not exist or has been paid')]);
+        }
+        if ($order->total_amount < 0) {
+            return $this->fail([400, __('Order amount is invalid')]);
         }
         // free process
         if ($order->total_amount <= 0) {

@@ -17,7 +17,7 @@
 ### Software Requirements
 - Operating System: Ubuntu 20.04+ / Debian 10+ (⚠️ CentOS 7 is not recommended)
 - Latest version of aaPanel
-- PHP 8.2
+- PHP **8.2.35 or later**, using the latest security patch for your PHP release series
 - MySQL 5.7+
 - Redis
 - Nginx (any version)
@@ -37,7 +37,9 @@ bash install_6.0_en.sh aapanel
 In the aaPanel dashboard, install:
 - Nginx (any version)
 - MySQL 5.7
-- PHP 8.2
+- PHP 8.2, updated to **8.2.35 or later** within the 8.2 series
+
+Check the installed version with `/www/server/php/82/bin/php -v` and `php -v`. The website, CLI, scheduled tasks and Supervisor processes must all use an updated PHP runtime. After upgrading, restart PHP-FPM and any running Horizon, Octane and WebSocket workers.
 
 #### 2.2 Install PHP Extensions
 Required PHP extensions:
@@ -62,7 +64,7 @@ Functions that need to be enabled:
 2. Fill in the information:
    - Domain: Enter your site domain
    - Database: Select MySQL
-   - PHP Version: Select 8.2
+   - PHP Version: Select 8.2 with patch version **8.2.35 or later**
 
 #### 3.2 Deploy Xboard
 ```bash
@@ -169,7 +171,42 @@ sh update.sh
 ## Troubleshooting
 
 ### Common Issues
-1. Changes to admin path require service restart to take effect
-2. Any code changes after enabling Octane require restart to take effect
+1. **Empty Admin Dashboard**: If the admin panel is blank, run `git submodule update --init --recursive --force` to restore the theme files.
+2. Changes to admin path require service restart to take effect
+3. Any code changes after enabling Octane require restart to take effect
 3. When PHP extension installation fails, check if PHP version is correct
-4. For database connection failures, check database configuration and permissions 
+4. For database connection failures, check database configuration and permissions
+
+## Enable WebSocket Real-time Sync (Optional)
+
+WebSocket enables real-time synchronization of configurations and user changes to nodes.
+
+### 1. Start WS Server
+
+Add a WebSocket daemon process in aaPanel Supervisor:
+- Name: `Xboard-WS`
+- Run User: `www`
+- Running Directory: Site directory
+- Start Command: `php artisan ws-server start`
+- Process Count: 1
+
+### 2. Configure Nginx
+
+Add the WebSocket location **before** the main `location ^~ /` block in your site's Nginx configuration:
+```nginx
+location /ws/ {
+    proxy_pass http://127.0.0.1:8076;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_read_timeout 60s;
+}
+```
+
+### 3. Restart Services
+
+Restart the Octane and WS Server processes in Supervisor.
+
+> The node will automatically detect WebSocket availability during handshake. No extra configuration is needed on the node side.

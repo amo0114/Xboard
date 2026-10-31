@@ -27,7 +27,7 @@ class MailLinkService
             return [false, [429, __('Sending frequently, please try again later')]];
         }
 
-        $user = User::where('email', $email)->first();
+        $user = User::byEmail($email)->first();
         if (!$user) {
             return [true, true]; // 成功但用户不存在，保护用户隐私
         }
@@ -46,7 +46,7 @@ class MailLinkService
 
         $this->sendMailLinkEmail($user, $link);
 
-        return [true, $link];
+        return [true, true];
     }
 
     /**
@@ -63,7 +63,7 @@ class MailLinkService
             'subject' => __('Login to :name', [
                 'name' => admin_setting('app_name', 'XBoard')
             ]),
-            'template_name' => 'login',
+            'template_name' => 'mailLogin',
             'template_value' => [
                 'name' => admin_setting('app_name', 'XBoard'),
                 'link' => $link,

@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Jobs\SendEmailJob;
 use App\Models\MailLog;
+use App\Models\MailTemplate;
 use App\Models\User;
 use App\Utils\CacheKey;
 use Illuminate\Support\Facades\Cache;
@@ -13,6 +14,33 @@ use Illuminate\Support\Facades\Mail;
 
 class MailService
 {
+    // Render {{key}} / {{key|default}} placeholders.
+    private static function renderPlaceholders(string $template, array $vars): string
+    {
+        if ($template === '' || empty($vars)) {
+            return $template;
+        }
+
+        return (string) preg_replace_callback('/\{\{\s*([a-zA-Z0-9_.-]+)(?:\|([^}]*))?\s*\}\}/', function ($m) use ($vars) {
+            $key = $m[1] ?? '';
+            $default = array_key_exists(2, $m) ? trim((string) $m[2]) : null;
+
+            if (!array_key_exists($key, $vars) || $vars[$key] === null || $vars[$key] === '') {
+                return $default !== null ? $default : $m[0];
+            }
+
+            $value = $vars[$key];
+            if (is_bool($value)) {
+                return $value ? '1' : '0';
+            }
+            if (is_scalar($value)) {
+                return (string) $value;
+            }
+
+            return json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '';
+        }, $template);
+    }
+
     /**
      * 获取需要发送提醒的用户总数
      */
@@ -222,15 +250,58 @@ class MailService
         }
         $email = $params['email'];
         $subject = $params['subject'];
-        $params['template_name'] = 'mail.' . admin_setting('email_template', 'default') . '.' . $params['template_name'];
+        $templateName = $params['template_name'];
+
+        $templateValue = $params['template_value'] ?? [];
+        $vars = is_array($templateValue) ? ($templateValue['vars'] ?? []) : [];
+        $contentMode = is_array($templateValue) ? ($templateValue['content_mode'] ?? null) : null;
+
+        if (is_array($vars) && !empty($vars)) {
+            $subject = self::renderPlaceholders((string) $subject, $vars);
+
+            if (is_array($templateValue) && isset($templateValue['content']) && is_string($templateValue['content'])) {
+                $templateValue['content'] = self::renderPlaceholders($templateValue['content'], $vars);
+            }
+        }
+
+        if ($contentMode === 'text' && is_array($templateValue) && isset($templateValue['content']) && is_string($templateValue['content'])) {
+            $templateValue['content'] = e($templateValue['content']);
+        }
+
+        $params['template_value'] = $templateValue;
+
+        // Check for DB template override (cached to avoid per-email queries in bulk sends).
+        // Cache 'none' sentinel for templates that don't exist in DB.
+        $cacheKey = "mail_template:{$templateName}";
+        $cached = Cache::get($cacheKey);
+        if ($cached === null) {
+            $dbTemplate = MailTemplate::where('name', $templateName)->first();
+            Cache::put($cacheKey, $dbTemplate ?: 'none', 3600);
+        } else {
+            $dbTemplate = ($cached === 'none') ? null : $cached;
+        }
+
         try {
-            Mail::send(
-                $params['template_name'],
-                $params['template_value'],
-                function ($message) use ($email, $subject) {
+            if ($dbTemplate) {
+                $renderVars = self::buildSafeVars($templateValue);
+                $renderedSubject = self::renderPlaceholders($dbTemplate->subject, $renderVars);
+                $renderedContent = self::renderPlaceholders($dbTemplate->content, $renderVars);
+                $subject = $renderedSubject ?: $subject;
+
+                Mail::html($renderedContent, function ($message) use ($email, $subject) {
                     $message->to($email)->subject($subject);
-                }
-            );
+                });
+                $params['template_name'] = 'db:' . $templateName;
+            } else {
+                $params['template_name'] = 'mail.default.' . $templateName;
+                Mail::send(
+                    $params['template_name'],
+                    $params['template_value'],
+                    function ($message) use ($email, $subject) {
+                        $message->to($email)->subject($subject);
+                    }
+                );
+            }
             $error = null;
         } catch (\Exception $e) {
             Log::error($e);
@@ -245,5 +316,27 @@ class MailService
         ];
         MailLog::create($log);
         return $log;
+    }
+
+    /**
+     * Build HTML-escaped vars for DB template rendering.
+     */
+    private static function buildSafeVars(array $templateValue): array
+    {
+        $safe = [];
+        foreach ($templateValue as $key => $value) {
+            if (is_scalar($value)) {
+                $safe[$key] = e((string) $value);
+            }
+        }
+        // 'content' may be pre-escaped text or admin-authored HTML.
+        // For text mode, apply nl2br so line breaks survive in DB templates
+        // (Blade templates handle this with {!! nl2br($content) !!}).
+        if (isset($templateValue['content'])) {
+            $content = (string) $templateValue['content'];
+            $contentMode = $templateValue['content_mode'] ?? null;
+            $safe['content'] = ($contentMode === 'text') ? nl2br($content) : $content;
+        }
+        return $safe;
     }
 }

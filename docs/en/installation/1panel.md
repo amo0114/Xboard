@@ -2,6 +2,8 @@
 
 This guide explains how to deploy Xboard using 1Panel.
 
+The Xboard container must run **PHP 8.2.35 or later**, with the latest security patch for its PHP release series. Host PHP is not required.
+
 ## 1. Environment Preparation
 
 Install 1Panel:
@@ -36,19 +38,17 @@ sudo bash quick_start.sh
 location ^~ / {
     proxy_pass http://127.0.0.1:7001;
     proxy_http_version 1.1;
-    proxy_set_header Connection "";
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Real-PORT $remote_port;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header Host $http_host;
-    proxy_set_header Scheme $scheme;
-    proxy_set_header Server-Protocol $server_protocol;
-    proxy_set_header Server-Name $server_name;
-    proxy_set_header Server-Addr $server_addr;
-    proxy_set_header Server-Port $server_port;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $http_connection;
+    proxy_read_timeout 60s;
+    proxy_buffering off;
     proxy_cache off;
 }
 ```
+> The all-in-one container's embedded Caddy fuses HTTP and the panel↔node WebSocket on port 7001. The single `Upgrade`/`Connection` pair above is enough; no separate `/ws/` location is needed. To opt out and expose Octane / `:8076` directly, set `ENABLE_CADDY=false` in `compose.yaml`.
 
 3. Install Xboard:
 ```bash
@@ -63,66 +63,22 @@ yum update && yum install -y git
 
 # Clone repository
 git clone -b compose --depth 1 https://github.com/cedar2025/Xboard ./
+# (Optional shortcut: skip the clone and just fetch the sample file with
+#  curl -fsSL https://raw.githubusercontent.com/cedar2025/Xboard/master/compose.sample.yaml -o compose.yaml
+#  — the running PHP code is in the Docker image, not in the clone.)
 
 # Configure Docker Compose
 ```
 
-4. Edit compose.yaml:
-```yaml
-services:
-  web:
-    image: ghcr.io/cedar2025/xboard:new
-    volumes:
-      - ./.docker/.data/redis/:/data/
-      - ./.env:/www/.env
-      - ./.docker/.data/:/www/.docker/.data
-      - ./storage/logs:/www/storage/logs
-      - ./storage/theme:/www/storage/theme
-      - ./plugins:/www/plugins
-    environment:
-      - docker=true
-    depends_on:
-      - redis
-    command: php artisan octane:start --host=0.0.0.0 --port=7001
-    restart: on-failure
-    ports:
-      - 7001:7001
-    networks:
-      - 1panel-network
-
-  horizon:
-    image: ghcr.io/cedar2025/xboard:new
-    volumes:
-      - ./.docker/.data/redis/:/data/
-      - ./.env:/www/.env
-      - ./.docker/.data/:/www/.docker/.data
-      - ./storage/logs:/www/storage/logs
-      - ./plugins:/www/plugins
-    restart: on-failure
-    command: php artisan horizon
-    networks:
-      - 1panel-network
-    depends_on:
-      - redis
-
-  redis:
-    image: redis:7-alpine
-    command: redis-server --unixsocket /data/redis.sock --unixsocketperm 777
-    restart: unless-stopped
-    networks:
-      - 1panel-network
-    volumes:
-      - ./.docker/.data/redis:/data
-
-networks:
-  1panel-network:
-    external: true
+4. Prepare `compose.yaml` from the **1Panel-specific** sample. This sample joins the external `1panel-network` so the container can reach the 1Panel-managed MySQL/Redis containers by their hostname:
+```bash
+cp compose.1panel.sample.yaml compose.yaml
 ```
+The file is gitignored so your edits survive `git pull`. See [docker-compose.md](./docker-compose.md) for tuning environment variables (`RESOURCE_PROFILE`, `ENABLE_HORIZON`, `ENABLE_REDIS`, etc.) and the other `compose.*.sample.yaml` alternatives.
 
 5. Initialize Installation:
 ```bash
-# Install dependencies and initialize
-docker compose run -it --rm web php artisan xboard:install
+docker compose run -it --rm xboard php artisan xboard:install
 ```
 
 ⚠️ Important Configuration Notes:
@@ -156,23 +112,21 @@ docker compose up -d
 
 ## 4. Version Update
 
-> 💡 Important Note: The update command varies depending on your installation version:
-> - If you installed recently (new version), use this command:
 ```bash
-docker compose pull && \
-docker compose run -it --rm web php artisan xboard:update && \
-docker compose up -d
+docker compose pull && docker compose up -d
 ```
-> - If you installed earlier (old version), replace `web` with `xboard`:
-```bash
-docker compose pull && \
-docker compose run -it --rm xboard php artisan xboard:update && \
-docker compose up -d
-```
-> 🤔 Not sure which to use? Try the new version command first, if it fails, use the old version command.
+
+The container always runs `php artisan xboard:update` (migrate + plugin install + version cache + theme refresh) on boot, so no extra command is required.
+
+> **Using a `compose.yaml` from before 2026-04-19?** That template did not auto-run `xboard:update` on container start, so use the following command to upgrade instead:
+> ```bash
+> docker compose pull && docker compose run -it --rm web php artisan xboard:update && docker compose up -d
+> ```
 
 ## Important Notes
 
 - ⚠️ Ensure firewall is enabled to prevent port 7001 exposure to public
 - Service restart is required after code modifications
-- SSL certificate configuration is recommended for secure access 
+- SSL certificate configuration is recommended for secure access
+
+> The node will automatically detect WebSocket availability during handshake. No extra configuration is needed on the node side. 

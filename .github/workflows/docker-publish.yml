@@ -51,6 +51,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Get version
+        id: get_version
+        run: echo "version=$(git describe --tags --always)" >> $GITHUB_OUTPUT
+
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -58,17 +62,13 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=ref,event=branch
-            type=sha,format=long
+            type=sha,format=short,prefix=,enable=true
             type=raw,value=new,enable=${{ github.ref == 'refs/heads/master' }}
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }}
             type=raw,value=${{ steps.get_version.outputs.version }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-
-      - name: Get version
-        id: get_version
-        run: echo "version=$(git describe --tags --always)" >> $GITHUB_OUTPUT
 
       - name: Update version in app.php
         run: |
@@ -82,6 +82,7 @@ jobs:
         with:
           context: .
           push: true
+          pull: true
           platforms: linux/amd64,linux/arm64
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -98,12 +99,3 @@ jobs:
           allow: |
             network.host
 
-      - name: Install cosign
-        uses: sigstore/cosign-installer@v3.4.0
-        with:
-          cosign-release: 'v2.2.2'
-
-      - name: Sign image
-        if: steps.build-and-push.outputs.digest != ''
-        run: |
-          echo "${{ steps.meta.outputs.tags }}" | xargs -I {} cosign sign --yes "{}@${{ steps.build-and-push.outputs.digest }}"
