@@ -8,13 +8,13 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\View;
 use Illuminate\Support\Facades\Route;
-use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 class PluginManager
 {
     protected string $pluginPath;
+    protected string $corePluginPath;
     protected array $loadedPlugins = [];
     protected bool $pluginsInitialized = false;
     protected array $configTypesCache = [];
@@ -22,6 +22,7 @@ class PluginManager
     public function __construct()
     {
         $this->pluginPath = base_path('plugins');
+        $this->corePluginPath = base_path('plugins-core');
     }
 
     /**
@@ -32,12 +33,40 @@ class PluginManager
         return 'Plugin\\' . Str::studly($pluginCode);
     }
 
-    /**
-     * 获取插件的基础路径
-     */
+    public function resolvePluginPath(string $pluginCode): ?string
+    {
+        $dirName = Str::studly($pluginCode);
+        $corePath = $this->corePluginPath . '/' . $dirName;
+        if (File::isDirectory($corePath)) {
+            return $corePath;
+        }
+        $userPath = $this->pluginPath . '/' . $dirName;
+        if (File::isDirectory($userPath)) {
+            return $userPath;
+        }
+        return null;
+    }
+
     public function getPluginPath(string $pluginCode): string
     {
+        return $this->resolvePluginPath($pluginCode)
+            ?? $this->pluginPath . '/' . Str::studly($pluginCode);
+    }
+
+    public function getUserPluginPath(string $pluginCode): string
+    {
         return $this->pluginPath . '/' . Str::studly($pluginCode);
+    }
+
+    public function isCorePlugin(string $pluginCode): bool
+    {
+        $dirName = Str::studly($pluginCode);
+        return File::isDirectory($this->corePluginPath . '/' . $dirName);
+    }
+
+    public function getPluginPaths(): array
+    {
+        return [$this->corePluginPath, $this->pluginPath];
     }
 
     /**
@@ -51,7 +80,9 @@ class PluginManager
 
         $pluginClass = $this->getPluginNamespace($pluginCode) . '\\Plugin';
 
-        if (!class_exists($pluginClass)) {
+        // Resolve core/user precedence before Composer can autoload an older
+        // installed copy from plugins/.
+        if (!class_exists($pluginClass, false)) {
             $pluginFile = $this->getPluginPath($pluginCode) . '/Plugin.php';
             if (!File::exists($pluginFile)) {
                 Log::warning("Plugin class file not found: {$pluginFile}");
@@ -61,7 +92,7 @@ class PluginManager
             require_once $pluginFile;
         }
 
-        if (!class_exists($pluginClass)) {
+        if (!class_exists($pluginClass, false)) {
             Log::error("Plugin class not found: {$pluginClass}");
             return null;
         }
@@ -220,6 +251,20 @@ class PluginManager
     }
 
     /**
+     * 获取 Migrator 实例并确保迁移仓库存在
+     */
+    protected function getMigrator(): \Illuminate\Database\Migrations\Migrator
+    {
+        $migrator = app('migrator');
+
+        if (!$migrator->repositoryExists()) {
+            $migrator->getRepository()->createRepository();
+        }
+
+        return $migrator;
+    }
+
+    /**
      * 运行插件数据库迁移
      */
     protected function runMigrations(string $pluginCode): void
@@ -227,10 +272,8 @@ class PluginManager
         $migrationsPath = $this->getPluginPath($pluginCode) . '/database/migrations';
 
         if (File::exists($migrationsPath)) {
-            Artisan::call('migrate', [
-                '--path' => "plugins/" . Str::studly($pluginCode) . "/database/migrations",
-                '--force' => true
-            ]);
+            $migrator = $this->getMigrator();
+            $migrator->run([$migrationsPath]);
         }
     }
 
@@ -242,10 +285,8 @@ class PluginManager
         $migrationsPath = $this->getPluginPath($pluginCode) . '/database/migrations';
 
         if (File::exists($migrationsPath)) {
-            Artisan::call('migrate:rollback', [
-                '--path' => "plugins/" . Str::studly($pluginCode) . "/database/migrations",
-                '--force' => true
-            ]);
+            $migrator = $this->getMigrator();
+            $migrator->rollback([$migrationsPath]);
         }
     }
 
@@ -390,17 +431,19 @@ class PluginManager
      */
     public function delete(string $pluginCode): bool
     {
-        // 先卸载插件
         if (Plugin::where('code', $pluginCode)->exists()) {
             $this->uninstall($pluginCode);
         }
 
-        $pluginPath = $this->getPluginPath($pluginCode);
+        if ($this->isCorePlugin($pluginCode)) {
+            throw new \Exception('核心插件不允许删除');
+        }
+
+        $pluginPath = $this->getUserPluginPath($pluginCode);
         if (!File::exists($pluginPath)) {
             throw new \Exception('插件不存在');
         }
 
-        // 删除插件目录
         File::deleteDirectory($pluginPath);
 
         return true;
@@ -518,7 +561,7 @@ class PluginManager
             throw new \Exception('插件配置文件格式错误');
         }
 
-        $targetPath = $this->pluginPath . '/' . Str::studly($config['code']);
+        $targetPath = $this->getUserPluginPath($config['code']);
         if (File::exists($targetPath)) {
             $installedConfigPath = $targetPath . '/config.json';
             if (!File::exists($installedConfigPath)) {
@@ -669,12 +712,27 @@ class PluginManager
      */
     public static function installDefaultPlugins(): void
     {
-        foreach (Plugin::PROTECTED_PLUGINS as $pluginCode) {
-            if (!Plugin::where('code', $pluginCode)->exists()) {
-                $pluginManager = app(self::class);
-                $pluginManager->install($pluginCode);
-                $pluginManager->enable($pluginCode);
-                Log::info("Installed and enabled default plugin: {$pluginCode}");
+        $pluginManager = app(self::class);
+        $coreDir = base_path('plugins-core');
+
+        if (!File::isDirectory($coreDir)) {
+            return;
+        }
+
+        foreach (File::directories($coreDir) as $directory) {
+            $configFile = $directory . '/config.json';
+            if (!File::exists($configFile)) {
+                continue;
+            }
+            $config = json_decode(File::get($configFile), true);
+            $code = $config['code'] ?? null;
+            if (!$code) {
+                continue;
+            }
+            if (!Plugin::where('code', $code)->exists()) {
+                $pluginManager->install($code);
+                $pluginManager->enable($code);
+                Log::info("Installed and enabled core plugin: {$code}");
             }
         }
     }

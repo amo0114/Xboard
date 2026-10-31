@@ -27,6 +27,11 @@ abstract class AbstractProtocol
     protected $clientVersion;
 
     /**
+     * @var string|null 原始 User-Agent
+     */
+    protected $userAgent;
+
+    /**
      * @var array 协议标识
      */
     public $flags = [];
@@ -48,13 +53,15 @@ abstract class AbstractProtocol
      * @param array $servers 服务器信息
      * @param string|null $clientName 客户端名称
      * @param string|null $clientVersion 客户端版本
+     * @param string|null $userAgent 原始 User-Agent
      */
-    public function __construct($user, $servers, $clientName = null, $clientVersion = null)
+    public function __construct($user, $servers, $clientName = null, $clientVersion = null, $userAgent = null)
     {
         $this->user = $user;
         $this->servers = $servers;
         $this->clientName = $clientName;
         $this->clientVersion = $clientVersion;
+        $this->userAgent = $userAgent;
         $this->protocolRequirements = $this->normalizeProtocolRequirements($this->protocolRequirements);
         $this->servers = HookManager::filter('protocol.servers.filtered', $this->filterServersByVersion());
     }
@@ -144,6 +151,10 @@ abstract class AbstractProtocol
             if (is_array($filterRule) && isset($filterRule['whitelist'])) {
                 $allowedValues = $filterRule['whitelist'];
                 $strict = $filterRule['strict'] ?? false;
+                // Normalize flat array ['tcp', 'ws'] to ['tcp' => '0.0.0', 'ws' => '0.0.0']
+                if (!empty($allowedValues) && is_int(array_key_first($allowedValues))) {
+                    $allowedValues = array_fill_keys($allowedValues, '0.0.0');
+                }
                 if ($strict) {
                     if ($actualValue === null) {
                         return false;

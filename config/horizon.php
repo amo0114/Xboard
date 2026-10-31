@@ -60,7 +60,7 @@ return [
 
     'prefix' => env(
         'HORIZON_PREFIX',
-        Str::slug(env('APP_NAME', 'laravel'), '_').'_horizon:'
+        Str::slug(env('APP_NAME', 'laravel'), '_') . '_horizon:'
     ),
 
     /*
@@ -155,7 +155,7 @@ return [
     |
     */
 
-    'memory_limit' => 64,
+    'memory_limit' => 256,
 
     /*
     |--------------------------------------------------------------------------
@@ -169,22 +169,67 @@ return [
     */
 
     'environments' => [
+        'production' => [
+            'data-pipeline' => [
+                'connection' => 'redis',
+                'queue' => ['traffic_fetch', 'stat', 'user_alive_sync'],
+                'balance' => 'auto',
+                'autoScalingStrategy' => 'time',
+                'minProcesses' => 1,
+                'maxProcesses' => (int) env('HORIZON_DATA_PIPELINE_MAX', 8),
+                'memory' => (int) env('HORIZON_WORKER_MEMORY_MB', 128),
+                'maxTime' => (int) env('HORIZON_WORKER_MAX_TIME', 3600),
+                'maxJobs' => (int) env('HORIZON_WORKER_MAX_JOBS', 1000),
+                'balanceCooldown' => 1,
+                'tries' => 3,
+                'timeout' => 30,
+            ],
+            'business' => [
+                'connection' => 'redis',
+                'queue' => ['default', 'order_handle'],
+                'balance' => 'simple',
+                'minProcesses' => 1,
+                'maxProcesses' => (int) env('HORIZON_BUSINESS_MAX', 3),
+                'memory' => (int) env('HORIZON_WORKER_MEMORY_MB', 128),
+                'maxTime' => (int) env('HORIZON_WORKER_MAX_TIME', 3600),
+                'maxJobs' => (int) env('HORIZON_WORKER_MAX_JOBS', 1000),
+                'tries' => 3,
+                'timeout' => 30,
+            ],
+            'notification' => [
+                'connection' => 'redis',
+                'queue' => ['send_email', 'send_telegram', 'send_email_mass', 'node_sync'],
+                'balance' => 'auto',
+                'autoScalingStrategy' => 'size',
+                'minProcesses' => 1,
+                'maxProcesses' => (int) env('HORIZON_NOTIFICATION_MAX', 3),
+                'memory' => (int) env('HORIZON_WORKER_MEMORY_MB', 128),
+                'maxTime' => (int) env('HORIZON_WORKER_MAX_TIME', 3600),
+                'maxJobs' => (int) env('HORIZON_WORKER_MAX_JOBS', 1000),
+                'tries' => 3,
+                'timeout' => 60,
+                'backoff' => [3, 10, 30],
+            ],
+        ],
         'local' => [
             'Xboard' => [
                 'connection' => 'redis',
                 'queue' => [
+                    'default',
                     'order_handle',
                     'traffic_fetch',
                     'stat',
                     'send_email',
                     'send_email_mass',
                     'send_telegram',
-                    'online_sync'
+                    'user_alive_sync',
+                    'node_sync'
                 ],
                 'balance' => 'auto',
                 'minProcesses' => 1,
-                'maxProcesses' => 20,
+                'maxProcesses' => 5,
                 'tries' => 1,
+                'timeout' => 60,
                 'balanceCooldown' => 3,
             ],
         ],

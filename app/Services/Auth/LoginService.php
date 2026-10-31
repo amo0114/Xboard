@@ -36,7 +36,7 @@ class LoginService
         }
 
         // 查找用户
-        $user = User::where('email', $email)->first();
+        $user = User::byEmail($email)->first();
         if (!$user) {
             return [false, [400, __('Incorrect email or password')]];
         }
@@ -93,13 +93,14 @@ class LoginService
         }
 
         // 验证邮箱验证码
-        if ((string) Cache::get(CacheKey::get('EMAIL_VERIFY_CODE', $email)) !== (string) $emailCode) {
+        $cachedEmailCode = Cache::get(CacheKey::get('EMAIL_VERIFY_CODE', $email));
+        if ($cachedEmailCode === null || !hash_equals((string) $cachedEmailCode, $emailCode)) {
             Cache::put($forgetRequestLimitKey, $forgetRequestLimit ? $forgetRequestLimit + 1 : 1, 300);
             return [false, [400, __('Incorrect email verification code')]];
         }
 
         // 查找用户
-        $user = User::where('email', $email)->first();
+        $user = User::byEmail($email)->first();
         if (!$user) {
             return [false, [400, __('This email is not registered in the system')]];
         }

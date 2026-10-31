@@ -41,6 +41,8 @@ use Illuminate\Database\Eloquent\Casts\Attribute;
  * @property-read int|null $last_check_at 最后检查时间（Unix时间戳）
  * @property-read int|null $last_push_at 最后推送时间（Unix时间戳）
  * @property-read int $online 在线用户数
+ * @property-read int $online_conn 在线连接数
+ * @property-read array|null $metrics 节点指标指标
  * @property-read int $is_online 是否在线（1在线 0离线）
  * @property-read string $available_status 可用状态描述
  * @property-read string $cache_key 缓存键
@@ -50,6 +52,10 @@ use Illuminate\Database\Eloquent\Casts\Attribute;
  * @property int|null $d 下行流量
  * @property int|null $total 总流量
  * @property-read array|null $load_status 负载状态（包含CPU、内存、交换区、磁盘信息）
+ * 
+ * @property int $transfer_enable 流量上限，0或者null表示不限制
+ * @property int $u 当前上传流量
+ * @property int $d 当前下载流量
  */
 class Server extends Model
 {
@@ -112,46 +118,140 @@ class Server extends Model
         'route_ids' => 'array',
         'tags' => 'array',
         'protocol_settings' => 'array',
+        'custom_outbounds' => 'array',
+        'custom_routes' => 'array',
+        'cert_config' => 'array',
         'last_check_at' => 'integer',
         'last_push_at' => 'integer',
         'show' => 'boolean',
+        'enabled' => 'boolean',
         'created_at' => 'timestamp',
         'updated_at' => 'timestamp',
         'rate_time_ranges' => 'array',
         'rate_time_enable' => 'boolean',
+        'transfer_enable' => 'integer',
+        'u' => 'integer',
+        'd' => 'integer',
+        'machine_id' => 'integer',
+    ];
+
+    private const MULTIPLEX_CONFIGURATION = [
+        'multiplex' => [
+            'type' => 'object',
+            'fields' => [
+                'enabled' => ['type' => 'boolean', 'default' => false],
+                'protocol' => ['type' => 'string', 'default' => 'yamux'],
+                'max_connections' => ['type' => 'integer', 'default' => null],
+                // 'min_streams' => ['type' => 'integer', 'default' => null],
+                // 'max_streams' => ['type' => 'integer', 'default' => null],
+                'padding' => ['type' => 'boolean', 'default' => false],
+                'brutal' => [
+                    'type' => 'object',
+                    'fields' => [
+                        'enabled' => ['type' => 'boolean', 'default' => false],
+                        'up_mbps' => ['type' => 'integer', 'default' => null],
+                        'down_mbps' => ['type' => 'integer', 'default' => null],
+                    ]
+                ]
+            ]
+        ]
+    ];
+
+    private const REALITY_CONFIGURATION = [
+        'reality_settings' => [
+            'type' => 'object',
+            'fields' => [
+                'server_name' => ['type' => 'string', 'default' => null],
+                'server_port' => ['type' => 'string', 'default' => null],
+                'public_key' => ['type' => 'string', 'default' => null],
+                'private_key' => ['type' => 'string', 'default' => null],
+                'short_id' => ['type' => 'string', 'default' => null],
+                'allow_insecure' => ['type' => 'boolean', 'default' => false],
+            ]
+        ]
+    ];
+
+    private const UTLS_CONFIGURATION = [
+        'utls' => [
+            'type' => 'object',
+            'fields' => [
+                'enabled' => ['type' => 'boolean', 'default' => false],
+                'fingerprint' => ['type' => 'string', 'default' => 'chrome'],
+            ]
+        ]
+    ];
+
+    private const ECH_CONFIGURATION = [
+        'ech' => [
+            'type' => 'object',
+            'fields' => [
+                'enabled' => ['type' => 'boolean', 'default' => false],
+                'config' => ['type' => 'string', 'default' => null],
+                'query_server_name' => ['type' => 'string', 'default' => null],
+                'key' => ['type' => 'string', 'default' => null],
+                'key_path' => ['type' => 'string', 'default' => null],
+                'config_path' => ['type' => 'string', 'default' => null],
+            ]
+        ]
+    ];
+
+    private const TLS_SETTINGS_CONFIGURATION = [
+        'type' => 'object',
+        'fields' => [
+            'server_name' => ['type' => 'string', 'default' => null],
+            'allow_insecure' => ['type' => 'boolean', 'default' => false],
+            ...self::ECH_CONFIGURATION,
+        ]
+    ];
+
+    private const TLS_CONFIGURATION = [
+        'type' => 'object',
+        'fields' => [
+            'server_name' => ['type' => 'string', 'default' => null],
+            'allow_insecure' => ['type' => 'boolean', 'default' => false],
+            ...self::ECH_CONFIGURATION,
+        ]
     ];
 
     private const PROTOCOL_CONFIGURATIONS = [
         self::TYPE_TROJAN => [
-            'allow_insecure' => ['type' => 'boolean', 'default' => false],
-            'server_name' => ['type' => 'string', 'default' => null],
+            'tls' => ['type' => 'integer', 'default' => 1],
             'network' => ['type' => 'string', 'default' => null],
-            'network_settings' => ['type' => 'array', 'default' => null]
+            'network_settings' => ['type' => 'array', 'default' => null],
+            'server_name' => ['type' => 'string', 'default' => null],
+            'allow_insecure' => ['type' => 'boolean', 'default' => false],
+            'tls_settings' => self::TLS_SETTINGS_CONFIGURATION,
+            ...self::REALITY_CONFIGURATION,
+            ...self::MULTIPLEX_CONFIGURATION,
+            ...self::UTLS_CONFIGURATION
         ],
         self::TYPE_VMESS => [
             'tls' => ['type' => 'integer', 'default' => 0],
             'network' => ['type' => 'string', 'default' => null],
             'rules' => ['type' => 'array', 'default' => null],
             'network_settings' => ['type' => 'array', 'default' => null],
-            'tls_settings' => ['type' => 'array', 'default' => null]
+            'tls_settings' => self::TLS_SETTINGS_CONFIGURATION,
+            ...self::MULTIPLEX_CONFIGURATION,
+            ...self::UTLS_CONFIGURATION
         ],
         self::TYPE_VLESS => [
             'tls' => ['type' => 'integer', 'default' => 0],
-            'tls_settings' => ['type' => 'array', 'default' => null],
+            'tls_settings' => self::TLS_SETTINGS_CONFIGURATION,
             'flow' => ['type' => 'string', 'default' => null],
+            'encryption' => [
+                'type' => 'object',
+                'default' => null,
+                'fields' => [
+                    'enabled' => ['type' => 'boolean', 'default' => false],
+                    'encryption' => ['type' => 'string', 'default' => null],  // 客户端公钥
+                    'decryption' => ['type' => 'string', 'default' => null],   // 服务端私钥
+                ]
+            ],
             'network' => ['type' => 'string', 'default' => null],
             'network_settings' => ['type' => 'array', 'default' => null],
-            'reality_settings' => [
-                'type' => 'object',
-                'fields' => [
-                    'allow_insecure' => ['type' => 'boolean', 'default' => false],
-                    'server_port' => ['type' => 'string', 'default' => null],
-                    'server_name' => ['type' => 'string', 'default' => null],
-                    'public_key' => ['type' => 'string', 'default' => null],
-                    'private_key' => ['type' => 'string', 'default' => null],
-                    'short_id' => ['type' => 'string', 'default' => null]
-                ]
-            ]
+            ...self::REALITY_CONFIGURATION,
+            ...self::MULTIPLEX_CONFIGURATION,
+            ...self::UTLS_CONFIGURATION
         ],
         self::TYPE_SHADOWSOCKS => [
             'cipher' => ['type' => 'string', 'default' => null],
@@ -177,13 +277,7 @@ class Server extends Model
                     'password' => ['type' => 'string', 'default' => null]
                 ]
             ],
-            'tls' => [
-                'type' => 'object',
-                'fields' => [
-                    'server_name' => ['type' => 'string', 'default' => null],
-                    'allow_insecure' => ['type' => 'boolean', 'default' => false]
-                ]
-            ],
+            'tls' => self::TLS_CONFIGURATION,
             'hop_interval' => ['type' => 'integer', 'default' => null]
         ],
         self::TYPE_TUIC => [
@@ -191,13 +285,7 @@ class Server extends Model
             'congestion_control' => ['type' => 'string', 'default' => 'cubic'],
             'alpn' => ['type' => 'array', 'default' => ['h3']],
             'udp_relay_mode' => ['type' => 'string', 'default' => 'native'],
-            'tls' => [
-                'type' => 'object',
-                'fields' => [
-                    'server_name' => ['type' => 'string', 'default' => null],
-                    'allow_insecure' => ['type' => 'boolean', 'default' => false]
-                ]
-            ]
+            'tls' => self::TLS_CONFIGURATION
         ],
         self::TYPE_ANYTLS => [
             'padding_scheme' => [
@@ -214,39 +302,24 @@ class Server extends Model
                     "7=500-1000"
                 ]
             ],
-            'tls' => [
-                'type' => 'object',
-                'fields' => [
-                    'server_name' => ['type' => 'string', 'default' => null],
-                    'allow_insecure' => ['type' => 'boolean', 'default' => false]
-                ]
-            ]
+            'tls' => self::TLS_CONFIGURATION
         ],
         self::TYPE_SOCKS => [
             'tls' => ['type' => 'integer', 'default' => 0],
-            'tls_settings' => [
-                'type' => 'object',
-                'fields' => [
-                    'allow_insecure' => ['type' => 'boolean', 'default' => false]
-                ]
-            ]
+            'tls_settings' => self::TLS_SETTINGS_CONFIGURATION
         ],
         self::TYPE_NAIVE => [
             'tls' => ['type' => 'integer', 'default' => 0],
-            'tls_settings' => ['type' => 'array', 'default' => null]
+            'tls_settings' => self::TLS_SETTINGS_CONFIGURATION
         ],
         self::TYPE_HTTP => [
             'tls' => ['type' => 'integer', 'default' => 0],
-            'tls_settings' => [
-                'type' => 'object',
-                'fields' => [
-                    'allow_insecure' => ['type' => 'boolean', 'default' => false]
-                ]
-            ]
+            'tls_settings' => self::TLS_SETTINGS_CONFIGURATION
         ],
         self::TYPE_MIERU => [
-            'transport' => ['type' => 'string', 'default' => 'tcp'],
-            'multiplexing' => ['type' => 'string', 'default' => 'MULTIPLEXING_LOW']
+            'transport' => ['type' => 'string', 'default' => 'TCP'],
+            'traffic_pattern' => ['type' => 'string', 'default' => ''],
+            ...self::MULTIPLEX_CONFIGURATION,
         ]
     ];
 
@@ -349,9 +422,14 @@ class Server extends Model
         return $this->hasMany(StatServer::class, 'server_id', 'id');
     }
 
+    public function machine(): \Illuminate\Database\Eloquent\Relations\BelongsTo
+    {
+        return $this->belongsTo(ServerMachine::class, 'machine_id');
+    }
+
     public function groups()
     {
-        return ServerGroup::whereIn('id', $this->group_ids)->get();
+        return ServerGroup::whereIn('id', $this->group_ids ?? [])->get();
     }
 
     public function routes()
@@ -436,6 +514,32 @@ class Server extends Model
                     return Helper::getServerKey($this->created_at, 16);
                 }
                 return null;
+            }
+        );
+    }
+
+    /**
+     * 指标指标访问器
+     */
+    protected function metrics(): Attribute
+    {
+        return Attribute::make(
+            get: function () {
+                $type = strtoupper($this->type);
+                $serverId = $this->parent_id ?: $this->id;
+                return Cache::get(CacheKey::get("SERVER_{$type}_METRICS", $serverId));
+            }
+        );
+    }
+
+    /**
+     * 在线连接数访问器
+     */
+    protected function onlineConn(): Attribute
+    {
+        return Attribute::make(
+            get: function () {
+                return $this->metrics['active_connections'] ?? 0;
             }
         );
     }

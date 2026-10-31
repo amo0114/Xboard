@@ -8,6 +8,39 @@ use Illuminate\Foundation\Http\FormRequest;
 
 class ServerSave extends FormRequest
 {
+    private const UTLS_RULES = [
+        'utls.enabled' => 'nullable|boolean',
+        'utls.fingerprint' => 'nullable|string',
+    ];
+
+    private const MULTIPLEX_RULES = [
+        'multiplex.enabled' => 'nullable|boolean',
+        'multiplex.protocol' => 'nullable|string',
+        'multiplex.max_connections' => 'nullable|integer',
+        'multiplex.min_streams' => 'nullable|integer',
+        'multiplex.max_streams' => 'nullable|integer',
+        'multiplex.padding' => 'nullable|boolean',
+        'multiplex.brutal.enabled' => 'nullable|boolean',
+        'multiplex.brutal.up_mbps' => 'nullable|integer',
+        'multiplex.brutal.down_mbps' => 'nullable|integer',
+    ];
+
+    private const ECH_RULES = [
+        'enabled' => 'nullable|boolean',
+        'config' => 'nullable|string',
+        'query_server_name' => 'nullable|string',
+        'key' => 'nullable|string',
+    ];
+
+    private const REALITY_RULES = [
+        'reality_settings.allow_insecure' => 'nullable|boolean',
+        'reality_settings.server_name' => 'nullable|string',
+        'reality_settings.server_port' => 'nullable|integer',
+        'reality_settings.public_key' => 'nullable|string',
+        'reality_settings.private_key' => 'nullable|string',
+        'reality_settings.short_id' => 'nullable|string',
+    ];
+
     private const PROTOCOL_RULES = [
         'shadowsocks' => [
             'cipher' => 'required|string',
@@ -21,10 +54,10 @@ class ServerSave extends FormRequest
             'tls' => 'required|integer',
             'network' => 'required|string',
             'network_settings' => 'nullable|array',
-            'tls_settings.server_name' => 'nullable|string',
-            'tls_settings.allow_insecure' => 'nullable|boolean',
+            'rules' => 'nullable|array',
         ],
         'trojan' => [
+            'tls' => 'nullable|integer',
             'network' => 'required|string',
             'network_settings' => 'nullable|array',
             'server_name' => 'nullable|string',
@@ -36,8 +69,6 @@ class ServerSave extends FormRequest
             'obfs.open' => 'nullable|boolean',
             'obfs.type' => 'string|nullable',
             'obfs.password' => 'string|nullable',
-            'tls.server_name' => 'nullable|string',
-            'tls.allow_insecure' => 'nullable|boolean',
             'bandwidth.up' => 'nullable|integer',
             'bandwidth.down' => 'nullable|integer',
             'hop_interval' => 'integer|nullable',
@@ -47,28 +78,29 @@ class ServerSave extends FormRequest
             'network' => 'required|string',
             'network_settings' => 'nullable|array',
             'flow' => 'nullable|string',
-            'tls_settings.server_name' => 'nullable|string',
-            'tls_settings.allow_insecure' => 'nullable|boolean',
-            'reality_settings.allow_insecure' => 'nullable|boolean',
-            'reality_settings.server_name' => 'nullable|string',
-            'reality_settings.server_port' => 'nullable|integer',
-            'reality_settings.public_key' => 'nullable|string',
-            'reality_settings.private_key' => 'nullable|string',
-            'reality_settings.short_id' => 'nullable|string',
+            'encryption' => 'nullable|array',
+            'encryption.enabled' => 'nullable|boolean',
+            'encryption.encryption' => 'nullable|string',
+            'encryption.decryption' => 'nullable|string',
         ],
         'socks' => [
+            'tls' => 'nullable|integer',
         ],
         'naive' => [
             'tls' => 'required|integer',
-            'tls_settings' => 'nullable|array',
         ],
         'http' => [
             'tls' => 'required|integer',
-            'tls_settings' => 'nullable|array',
+        ],
+        'tuic' => [
+            'version' => 'nullable|integer',
+            'congestion_control' => 'nullable|string',
+            'alpn' => 'nullable|array',
+            'udp_relay_mode' => 'nullable|string',
         ],
         'mieru' => [
-            'transport' => 'required|string',
-            'multiplexing' => 'required|string',
+            'transport' => 'required|string|in:TCP,UDP',
+            'traffic_pattern' => 'string',
         ],
         'anytls' => [
             'tls' => 'nullable|array',
@@ -88,6 +120,8 @@ class ServerSave extends FormRequest
             'group_ids' => 'nullable|array',
             'route_ids' => 'nullable|array',
             'parent_id' => 'nullable|integer',
+            'machine_id' => 'nullable|integer',
+            'enabled' => 'nullable|boolean',
             'host' => 'required',
             'port' => 'required',
             'server_port' => 'required',
@@ -97,23 +131,147 @@ class ServerSave extends FormRequest
             'rate' => 'required|numeric',
             'rate_time_enable' => 'nullable|boolean',
             'rate_time_ranges' => 'nullable|array',
+            'custom_outbounds' => 'nullable|array',
+            'custom_routes' => 'nullable|array',
+            'cert_config' => 'nullable|array',
             'rate_time_ranges.*.start' => 'required_with:rate_time_ranges|string|date_format:H:i',
             'rate_time_ranges.*.end' => 'required_with:rate_time_ranges|string|date_format:H:i',
             'rate_time_ranges.*.rate' => 'required_with:rate_time_ranges|numeric|min:0',
             'protocol_settings' => 'array',
+            'transfer_enable' => 'nullable|integer|min:0',
         ];
+    }
+
+    private function getProtocolRules(string $type): array
+    {
+        $rules = self::PROTOCOL_RULES[$type] ?? [];
+
+        return match ($type) {
+            'vmess' => array_merge(
+                $rules,
+                $this->buildTlsSettingsRules(),
+                self::MULTIPLEX_RULES,
+                self::UTLS_RULES,
+            ),
+            'trojan' => array_merge(
+                $rules,
+                $this->buildTlsSettingsRules(includeRoot: true),
+                self::REALITY_RULES,
+                self::MULTIPLEX_RULES,
+                self::UTLS_RULES,
+            ),
+            'hysteria' => array_merge(
+                $rules,
+                $this->buildTlsObjectRules(),
+            ),
+            'tuic' => array_merge(
+                $rules,
+                $this->buildTlsObjectRules(),
+            ),
+            'mieru' => array_merge(
+                $rules,
+                self::MULTIPLEX_RULES,
+            ),
+            'vless' => array_merge(
+                $rules,
+                $this->buildTlsSettingsRules(),
+                self::REALITY_RULES,
+                self::MULTIPLEX_RULES,
+                self::UTLS_RULES,
+            ),
+            'socks', 'naive', 'http' => array_merge(
+                $rules,
+                $this->buildTlsSettingsRules(includeRoot: $type !== 'socks'),
+            ),
+            'anytls' => array_merge(
+                $rules,
+                $this->buildTlsObjectRules(includeRoot: true),
+            ),
+            default => $rules,
+        };
+    }
+
+    private function buildTlsSettingsRules(bool $includeRoot = false): array
+    {
+        return array_merge(
+            $includeRoot ? ['tls_settings' => 'nullable|array'] : [],
+            [
+                'tls_settings.server_name' => 'nullable|string',
+                'tls_settings.allow_insecure' => 'nullable|boolean',
+                'tls_settings.ech' => 'nullable|array',
+            ],
+            $this->prefixRules('tls_settings.ech.', self::ECH_RULES),
+        );
+    }
+
+    private function buildTlsObjectRules(bool $includeRoot = false): array
+    {
+        return array_merge(
+            $includeRoot ? ['tls' => 'nullable|array'] : [],
+            [
+                'tls.server_name' => 'nullable|string',
+                'tls.allow_insecure' => 'nullable|boolean',
+                'tls.ech' => 'nullable|array',
+            ],
+            $this->prefixRules('tls.ech.', self::ECH_RULES),
+        );
+    }
+
+    private function prefixRules(string $prefix, array $rules): array
+    {
+        $result = [];
+        foreach ($rules as $field => $rule) {
+            $result[$prefix . $field] = $rule;
+        }
+        return $result;
     }
 
     public function rules(): array
     {
         $type = $this->input('type');
         $rules = $this->getBaseRules();
+        $protocolRules = $this->getProtocolRules($type);
 
-        foreach (self::PROTOCOL_RULES[$type] ?? [] as $field => $rule) {
+        foreach ($protocolRules as $field => $rule) {
             $rules['protocol_settings.' . $field] = $rule;
         }
 
         return $rules;
+    }
+
+    public function attributes(): array
+    {
+        return [
+            'protocol_settings.cipher' => '加密方式',
+            'protocol_settings.obfs' => '混淆类型',
+            'protocol_settings.network' => '传输协议',
+            'protocol_settings.port_range' => '端口范围',
+            'protocol_settings.traffic_pattern' => 'Traffic Pattern',
+            'protocol_settings.transport' => '传输方式',
+            'protocol_settings.version' => '协议版本',
+            'protocol_settings.password' => '密码',
+            'protocol_settings.handshake.server' => '握手服务器',
+            'protocol_settings.handshake.server_port' => '握手端口',
+            'protocol_settings.multiplex.enabled' => '多路复用',
+            'protocol_settings.multiplex.protocol' => '复用协议',
+            'protocol_settings.multiplex.max_connections' => '最大连接数',
+            'protocol_settings.multiplex.min_streams' => '最小流数',
+            'protocol_settings.multiplex.max_streams' => '最大流数',
+            'protocol_settings.multiplex.padding' => '复用填充',
+            'protocol_settings.multiplex.brutal.enabled' => 'Brutal加速',
+            'protocol_settings.multiplex.brutal.up_mbps' => 'Brutal上行速率',
+            'protocol_settings.multiplex.brutal.down_mbps' => 'Brutal下行速率',
+            'protocol_settings.utls.enabled' => 'uTLS',
+            'protocol_settings.utls.fingerprint' => 'uTLS指纹',
+            'protocol_settings.tls_settings.ech.enabled' => 'ECH',
+            'protocol_settings.tls_settings.ech.config' => 'ECH配置',
+            'protocol_settings.tls_settings.ech.query_server_name' => 'ECH查询域名',
+            'protocol_settings.tls_settings.ech.key' => 'ECH密钥',
+            'protocol_settings.tls.ech.enabled' => 'ECH',
+            'protocol_settings.tls.ech.config' => 'ECH配置',
+            'protocol_settings.tls.ech.query_server_name' => 'ECH查询域名',
+            'protocol_settings.tls.ech.key' => 'ECH密钥',
+        ];
     }
 
     public function messages()
@@ -136,7 +294,14 @@ class ServerSave extends FormRequest
             'networkSettings.array' => '传输协议配置有误',
             'ruleSettings.array' => '规则配置有误',
             'tlsSettings.array' => 'tls配置有误',
-            'dnsSettings.array' => 'dns配置有误'
+            'dnsSettings.array' => 'dns配置有误',
+            'protocol_settings.*.required' => ':attribute 不能为空',
+            'protocol_settings.*.required_if' => ':attribute 不能为空',
+            'protocol_settings.*.string' => ':attribute 必须是字符串',
+            'protocol_settings.*.integer' => ':attribute 必须是整数',
+            'protocol_settings.*.in' => ':attribute 的值不合法',
+            'transfer_enable.integer' => '流量上限必须是整数',
+            'transfer_enable.min' => '流量上限不能小于0',
         ];
     }
 }

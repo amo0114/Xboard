@@ -79,7 +79,7 @@ return [
         ],
 
         RequestTerminated::class => [
-            // FlushUploadedFiles::class,
+            FlushUploadedFiles::class,
         ],
 
         TaskReceived::class => [
@@ -129,10 +129,11 @@ return [
 
     'warm' => [
         ...Octane::defaultServicesToWarm(),
+        \App\Services\Plugin\PluginManager::class,
     ],
 
     'flush' => [
-        //
+        \App\Services\Plugin\HookManager::class,
     ],
 
     /*
@@ -147,8 +148,8 @@ return [
     */
 
     'cache' => [
-        'rows' => 1000,
-        'bytes' => 10000,
+        'rows' => (int) env('OCTANE_CACHE_ROWS', 1000),
+        'bytes' => (int) env('OCTANE_CACHE_BYTES', 8192),
     ],
 
     /*
@@ -163,10 +164,7 @@ return [
     */
 
     'tables' => [
-        'example:1000' => [
-            'name' => 'string:1000',
-            'votes' => 'int',
-        ],
+        //
     ],
 
     /*
@@ -203,7 +201,7 @@ return [
     |
     */
 
-    'garbage' => 50,
+    'garbage' => (int) env('OCTANE_GARBAGE_MB', 128),
 
     /*
     |--------------------------------------------------------------------------
@@ -216,6 +214,6 @@ return [
     |
     */
 
-    'max_execution_time' => 30,
+    'max_execution_time' => (int) env('OCTANE_MAX_EXECUTION_TIME', 60),
 
 ];

@@ -3,7 +3,7 @@
 <div align="center">
 
 [![Telegram](https://img.shields.io/badge/Telegram-Channel-blue)](https://t.me/XboardOfficial)
-![PHP](https://img.shields.io/badge/PHP-8.2+-green.svg)
+![PHP](https://img.shields.io/badge/PHP-8.2.35+-green.svg)
 ![MySQL](https://img.shields.io/badge/MySQL-5.7+-blue.svg)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -30,7 +30,7 @@ docker compose run -it --rm \
     -e ENABLE_SQLITE=true \
     -e ENABLE_REDIS=true \
     -e ADMIN_ACCOUNT=admin@demo.com \
-    web php artisan xboard:install && \
+    xboard php artisan xboard:install && \
 docker compose up -d
 ```
 
@@ -46,6 +46,9 @@ docker compose up -d
 - [Plugin Development Guide](./docs/en/development/plugin-development-guide.md) - Complete guide for developing XBoard plugins
 
 ### Deployment Guides
+
+PHP **8.2.35 or later** is required. Use the latest security patch for your PHP release series. Docker deployments must meet this requirement inside the container.
+
 - [Deploy with 1Panel](./docs/en/installation/1panel.md)
 - [Deploy with Docker Compose](./docs/en/installation/docker-compose.md)
 - [Deploy with aaPanel](./docs/en/installation/aapanel.md)
@@ -72,6 +75,12 @@ docker compose up -d
 ## ⚠️ Disclaimer
 
 This project is for learning and communication purposes only. Users are responsible for any consequences of using this project.
+
+## ❤️ Support The Project
+
+If this project has helped you, donations are appreciated. They help support ongoing maintenance and would make me very happy.
+
+TRC20: `TLypStEWsVrj6Wz9mCxbXffqgt5yz3Y4XB`
 
 ## 🌟 Maintenance Notice
 
