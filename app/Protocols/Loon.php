@@ -19,6 +19,11 @@ class Loon extends AbstractProtocol
     ];
 
     protected $protocolRequirements = [
+        // The Loon serializer has no XHTTP implementation; never emit it as TCP.
+        '*.vless.protocol_settings.network' => [
+            'whitelist' => ['tcp', 'ws', 'grpc', 'h2', 'httpupgrade'],
+            'strict' => true,
+        ],
         'loon.hysteria.protocol_settings.version' => [2 => '637'],
         'loon.trojan.protocol_settings.tls' => [0 => '3.2.1', 1 => '3.2.1',2 => '999.9.9'],
     ];

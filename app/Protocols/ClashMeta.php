@@ -28,6 +28,8 @@ class ClashMeta extends AbstractProtocol
     ];
 
     protected $protocolRequirements = [
+        // XHTTP entered stable Mihomo in 1.19.22; keep older core subscriptions valid.
+        'meta.vless.protocol_settings.network' => ['xhttp' => '1.19.22'],
         '*.vless.protocol_settings.network' => [
             'whitelist' => [
                 'tcp' => '0.0.0',

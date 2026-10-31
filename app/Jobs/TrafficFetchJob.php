@@ -37,8 +37,8 @@ class TrafficFetchJob implements ShouldQueue
             User::where('id', $uid)
                 ->incrementEach(
                     [
-                        'u' => $v[0] * $this->server['rate'],
-                        'd' => $v[1] * $this->server['rate'],
+                        'u' => intval((float) $v[0] * (float) $this->server['rate']),
+                        'd' => intval((float) $v[1] * (float) $this->server['rate']),
                     ],
                     ['t' => time()]
                 );
