@@ -76,6 +76,12 @@ class Server extends Model
 
     public const CHECK_INTERVAL = 300; // 5 minutes in seconds
 
+    // Subscription defaults for VLESS Reality; never included in the node API.
+    public const REALITY_CLIENT_DEFAULTS = [
+        'support_x25519mlkem768' => true,
+        'loon_tls_profile' => 'safari-ios-26',
+    ];
+
     private const CIPHER_CONFIGURATIONS = [
         '2022-blake3-aes-128-gcm' => [
             'serverKeySize' => 16,
@@ -235,6 +241,15 @@ class Server extends Model
             ...self::UTLS_CONFIGURATION
         ],
         self::TYPE_VLESS => [
+            // Client subscription options; excluded from the server node API.
+            'reality_client' => [
+                'type' => 'object',
+                'default' => self::REALITY_CLIENT_DEFAULTS,
+                'fields' => [
+                    'support_x25519mlkem768' => ['type' => 'boolean', 'default' => self::REALITY_CLIENT_DEFAULTS['support_x25519mlkem768']],
+                    'loon_tls_profile' => ['type' => 'string', 'default' => self::REALITY_CLIENT_DEFAULTS['loon_tls_profile']],
+                ],
+            ],
             'tls' => ['type' => 'integer', 'default' => 0],
             'tls_settings' => self::TLS_SETTINGS_CONFIGURATION,
             'flow' => ['type' => 'string', 'default' => null],

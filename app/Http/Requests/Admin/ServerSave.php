@@ -74,6 +74,9 @@ class ServerSave extends FormRequest
             'hop_interval' => 'integer|nullable',
         ],
         'vless' => [
+            'reality_client' => 'nullable|array',
+            'reality_client.support_x25519mlkem768' => 'nullable|boolean',
+            'reality_client.loon_tls_profile' => 'nullable|string|in:global,default,safari-ios18,safari-ios-26,chrome,chrome147',
             'tls' => 'required|integer',
             'network' => 'required|string',
             'network_settings' => 'nullable|array',

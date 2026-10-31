@@ -10,7 +10,7 @@ use App\Support\AbstractProtocol;
 
 class ClashMeta extends AbstractProtocol
 {
-    public $flags = ['meta', 'verge', 'flclash', 'nekobox', 'clashmetaforandroid'];
+    public $flags = ['meta', 'verge', 'flclash', 'nekobox', 'clashmetaforandroid', 'clashparty', 'clash-party', 'mihomoparty', 'mihomo-party'];
     const CUSTOM_TEMPLATE_FILE = 'resources/rules/custom.clashmeta.yaml';
     const CUSTOM_CLASH_TEMPLATE_FILE = 'resources/rules/custom.clash.yaml';
     const DEFAULT_TEMPLATE_FILE = 'resources/rules/default.clash.yaml';
@@ -439,7 +439,11 @@ class ClashMeta extends AbstractProtocol
                     'public-key' => data_get($protocol_settings, 'reality_settings.public_key'),
                     'short-id' => data_get($protocol_settings, 'reality_settings.short_id')
                 ];
+                if (data_get($protocol_settings, 'reality_client.support_x25519mlkem768') ?? true) {
+                    $array['reality-opts']['support-x25519mlkem768'] = true;
+                }
                 self::appendUtls($array, $protocol_settings);
+                $array['client-fingerprint'] ??= 'chrome';
                 break;
             default:
                 break;

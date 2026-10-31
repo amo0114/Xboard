@@ -286,6 +286,10 @@ class Loon extends AbstractProtocol
 				if ($shortid = data_get($protocol_settings, 'reality_settings.short_id')) {
 					$config[] = "short-id={$shortid}";
 				}
+				$profile = data_get($protocol_settings, 'reality_client.loon_tls_profile') ?? 'safari-ios-26';
+				if (in_array($profile, ['global', 'default', 'safari-ios18', 'safari-ios-26', 'chrome', 'chrome147'], true)) {
+					$config[] = "tls-profile={$profile}";
+				}
 				break;
 			default:
 				$config[] = "over-tls=false";

@@ -44,6 +44,7 @@ docker compose up -d
 
 ### Development Guides
 - [Plugin Development Guide](./docs/en/development/plugin-development-guide.md) - Complete guide for developing XBoard plugins
+- [VLESS Reality subscription defaults](./docs/zh/development/reality-client-defaults.md) - Automatic Mihomo and Loon compatibility
 
 ### Deployment Guides
 
